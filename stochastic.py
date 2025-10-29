@@ -11,11 +11,12 @@ import datetime
 print(datetime.datetime.now())
 
 # model parameter
-sigma = 0.02
+sigma = 0.05
 
 # numerical estimation parameters
-n = 71 # must be ODD number for correctly placing the central node
-integration_factor = 5.
+n = 401 # must be ODD number for correctly placing the central node
+integration_factor = 0.1
+MC_samples = int(3e5)
 exclude_path = False
 
 # CPUs usage
@@ -24,18 +25,18 @@ fraction_cores = 0.5
 # utils
 length_factor = 15.
 statistical_factor = 200.
-MC_samples = int(1e5)
-rescale = 100
+rescale = 500
+dtau_ML_factor = 1e4
 n_std_grid = 6.
-n_samples = 120
+n_samples = 80
 half_n_samples = n_samples/2
 n_ML = n*rescale
 T_ML = 10. #note s_0 is around 1., timescale roughly 1. independent of sigma
-tau_init = 3.
-dtau = (1/integration_factor)*(length_factor**2)/(2*n**2)
-dtau_ML = dtau/np.power(rescale, 2)
-sampling = int(0.1/dtau)
 corr_length = 1/sigma #note s_0 = 1. 
+tau_init = 3.
+dtau = (1e-4/integration_factor)*(length_factor**2)*(corr_length**2)/(n**2)
+dtau_ML = dtau_ML_factor*dtau/np.power(rescale, 2)
+sampling = int(0.1/dtau)
 T = corr_length*length_factor
 dt = T/n
 dt_ML = T/n_ML
@@ -44,11 +45,8 @@ t_grid_ML = np.array([dt_ML*i for i in range(n_ML)])
 mid_n = int(n/2)
 mid_n_ML = int(n_ML/2)
 t_from_point = t_grid - dt*mid_n
-t_from_point_ML = t_grid_ML - dt_ML*mid_n_ML
 t_pairs = [(t, tp) for t in t_from_point for tp in t_from_point]
 sigma2 = np.power(sigma,2)
-dt2 = np.power(dt, 2)
-dt2_ML = np.power(dt_ML, 2)
 noise_factor = np.sqrt(2*dtau/dt)
 left_border_vec = np.zeros_like(t_grid_ML)
 left_border_vec[0] = 1
@@ -88,12 +86,11 @@ c_ML = M_ML.diagonal(k=1)
 def get_r_t():
     def dW():
         return np.random.normal(0, np.sqrt(dt_ML))
-    pre = []
-    s = 0.
-    for t in range(n_ML):
-        pre.append(s)
-        s += sigma*dW() -(sigma2/2)*dt_ML
-    return np.exp(np.array(pre) - pre[mid_n_ML])
+    s = np.zeros(n_ML)
+    for j in range(mid_n_ML):
+        s[mid_n_ML +j +1] = s[mid_n_ML +j] + sigma*dW() -(sigma2/2)*dt_ML
+        s[mid_n_ML -j -1] = s[mid_n_ML -j] + sigma*dW() +(sigma2/2)*dt_ML
+    return np.exp(s)
 
 @njit
 def get_events(r_t):
@@ -163,9 +160,9 @@ def reduce_optimum(r_opt):
         reduced.append(np.mean(r_opt[i*rescale:(i+1)*rescale]))
     return np.array(reduced)
 
-
 r_t = get_r_t()
 time_series = get_events(r_t)
+
 
 print('Find ML...')
 
@@ -190,7 +187,7 @@ plt.clf()
 plt.plot(t_grid_ML, r_t, color = 'gray', linewidth = 0.8)
 plt.plot(t_grid_ML, long_optimum, color = 'black', linewidth = 1.)
 plt.axvline(t_grid_ML[mid_n_ML], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
-plt.ylim(0, 1.4*np.max(long_optimum))
+plt.ylim(0, 1.5*np.max(long_optimum))
 plt.xlim(t_grid[0], t_grid[-1])
 plt.legend(['$r$', '$\exp(s^*)$'], fontsize = 14)
 plt.xlabel('$t$', size = 14, rotation = 0)
@@ -406,13 +403,6 @@ spatial_var = term1 + term2 + term3
 
 G_t = nu * np.exp(-sigma*np.sqrt(alpha)*np.abs(t_from_point))
 x_correction = -(alpha/2)*np.sum(G_t*spatial_var)*dt
-
-print('Term 1')
-print(np.sum(G_t*term1))
-print('Term 2')
-print(np.sum(G_t*term2))
-print('Term 3')
-print(np.sum(G_t*term3))
 
 
 path_delta_nu = path_integral + double_path_integral_K + double_path_integral_Q
