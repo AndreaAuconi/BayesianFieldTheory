@@ -12,7 +12,7 @@ I1 = Integrate[
 ];
 Print["Integral over Q1 (I1): ", FullSimplify[I1]];
 
-IntegrandQ2[t_, s_] := -1 * Exp[-sigma * Sqrt[alpha] * (-t + s)] * Exp[-sigma^2 * t];
+IntegrandQ2[t_, s_] := Exp[-sigma * Sqrt[alpha] * (-t + s)] * Exp[-sigma^2 * t];
 I2 = Integrate[
     IntegrandQ2[t, s], 
     {t, -Infinity, 0}, 
@@ -30,7 +30,7 @@ I3 = Integrate[
 ];
 Print["Integral over Q3 (I3): ", FullSimplify[I3]];
 
-IntegrandQ4[t_, s_] := -1 * Exp[-sigma * Sqrt[alpha] * (t - s)] * Exp[-sigma^2 * s];
+IntegrandQ4[t_, s_] := Exp[-sigma * Sqrt[alpha] * (t - s)] * Exp[-sigma^2 * s];
 I4 = Integrate[
     IntegrandQ4[t, s], 
     {t, 0, Infinity}, 
@@ -45,12 +45,12 @@ TotalIntegralSimplified = FullSimplify[TotalIntegral, Assumptions -> assumptions
 Print["Total Integral I = I1 + I2 + I3 + I4:"];
 Print[TotalIntegralSimplified];
 
-FinalResult = (sigma^4 * alpha^2 / 4) * TotalIntegralSimplified;
+FinalResult = (sigma^2 * alpha / 4) * TotalIntegralSimplified;
 
 Print["Result:"];
 FinalResultSimplified = FullSimplify[FinalResult, Assumptions -> assumptions];
 Print[FinalResultSimplified]
 
 expressionString = ToString[FinalResultSimplified, InputForm];
-Export["scaling.txt", expressionString, "Text"];
+Export["q2.txt", expressionString, "Text"];
 

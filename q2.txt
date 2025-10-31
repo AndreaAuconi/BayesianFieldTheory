@@ -1,0 +1,1 @@
+(4*alpha - 3*Sqrt[alpha]*sigma)/(4*alpha - 8*Sqrt[alpha]*sigma + 3*sigma^2)
