@@ -11,11 +11,11 @@ import datetime
 print(datetime.datetime.now())
 
 # model parameter
-sigma = 0.05
+sigma = 0.01
 
 # numerical estimation parameters
-n = 401 # must be ODD number for correctly placing the central node
-integration_factor = 0.1
+n = 301 # must be ODD number for correctly placing the central node
+integration_factor = 0.5
 MC_samples = int(3e5)
 exclude_path = False
 
@@ -23,12 +23,12 @@ exclude_path = False
 fraction_cores = 0.5
 
 # utils
-length_factor = 15.
-statistical_factor = 200.
+length_factor = 13.
+statistical_factor = 100.
 rescale = 500
 dtau_ML_factor = 1e4
 n_std_grid = 6.
-n_samples = 80
+n_samples = 100
 half_n_samples = n_samples/2
 n_ML = n*rescale
 T_ML = 10. #note s_0 is around 1., timescale roughly 1. independent of sigma
@@ -187,7 +187,7 @@ plt.clf()
 plt.plot(t_grid_ML, r_t, color = 'gray', linewidth = 0.8)
 plt.plot(t_grid_ML, long_optimum, color = 'black', linewidth = 1.)
 plt.axvline(t_grid_ML[mid_n_ML], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
-plt.ylim(0, 1.5*np.max(long_optimum))
+plt.ylim(0.5*np.min(long_optimum), 1.5*np.max(long_optimum))
 plt.xlim(t_grid[0], t_grid[-1])
 plt.legend(['$r$', '$\exp(s^*)$'], fontsize = 14)
 plt.xlabel('$t$', size = 14, rotation = 0)
@@ -200,77 +200,7 @@ np.save('r_t.npy', r_t)
 np.save('long_optimum.npy', long_optimum)
 np.save('time_series.npy', time_series)
 
-
 ## %%
-
-@njit
-def OU_init():
-    s = np.random.normal(0, sqrt_nu)
-    vec = []
-    for _ in range(n):
-        s = s*np.exp(-dt*sigma*np.sqrt(alpha)) + sigma*np.random.normal(0, np.sqrt(dt))
-        vec.append(s)
-    return np.array(vec)
-
-@njit
-def noise_calibration():
-    def space_time_noise():
-        return np.random.normal(0, noise_factor, n)
-    discrete_Var = 0.
-    discrete_Mean = 0.
-    n_samples = 0 
-    x = OU_init()
-    tau = np.float64(0.)
-    i = 0
-    while tau < T_MC*calibration_ratio:
-        tau += dtau
-        rhs = x - dtau * alpha * x + space_time_noise()
-        x = thomas_algorithm_Langevin(rhs)      
-        i += 1
-        if i == sampling:
-            i = 0
-            discrete_Mean += x[mid_n]
-            discrete_Var += x[mid_n]**2
-            n_samples += 1
-    discrete_Mean /= n_samples
-    discrete_Var /= n_samples
-    discrete_Var -= discrete_Mean**2
-    return discrete_Var / nu
-
-print(datetime.datetime.now())
-
-print('noise calibration...')
-cal_replicas = Parallel(n_jobs=n_cores)(delayed(noise_calibration)() for _ in tqdm(range(split_sim*n_cores)))
-Var_ratio = np.mean(cal_replicas)
-noise_correction = 1/np.sqrt(Var_ratio)
-adjusted_noise_factor = noise_factor*noise_correction
-print(noise_correction)
-print(datetime.datetime.now())
-
-## %%
-
-@njit
-def Langevin_statistics():
-    def space_time_noise():
-        return np.random.normal(0, adjusted_noise_factor, n)
-    vec = np.zeros(n_samples)
-    x = OU_init()
-    tau = np.float64(0.)
-    i = 0
-    while tau < T_MC:
-        tau += dtau
-        rhs = x - dtau * r_star * (np.exp(x) - 1) + space_time_noise()
-        x = thomas_algorithm_Langevin(rhs)      
-        i += 1
-        if i == sampling:
-            i = 0
-            if tau > tau_init:
-                x_cont = x[mid_n]/dx_grid +half_n_samples
-                if x_cont > 0.:
-                    j = int(x_cont)
-                    if j < n_samples:
-                        vec[j] += 1
-    return vec
 
 @njit
 def integrand_J(k, t, alpha, sigma):
@@ -290,8 +220,8 @@ def compute_integral_J_montecarlo(t):
     integrand_values = integrand_J_mc(u_samples, t)
     integral_result = np.mean(integrand_values)
     constant_factor = (sigma**2) / (2 * np.pi)
-    monte_carlo_esimate = - constant_factor * 2 * integral_result
-    return monte_carlo_esimate
+    monte_carlo_estimate = - constant_factor * 2 * integral_result
+    return monte_carlo_estimate
 
 @njit
 def integrand_K_montecarlo(theta, phi, psi, t, tp):
@@ -454,15 +384,6 @@ np.save('K.npy', K)
 np.save('Q.npy', Q)
 np.save('J_alpha.npy', J_alpha)
 
-print(datetime.datetime.now())
-
-print('statistics...')
-replicas = Parallel(n_jobs=n_cores)(delayed(Langevin_statistics)() for _ in tqdm(range(split_sim*n_cores)))
-statistics = np.sum(replicas, axis = 0)
-statistics /= np.sum(statistics)
-numerical = statistics - Gauss
-print(datetime.datetime.now())
-
 
 z = x_grid/sqrt_nu
 delta_nu = np.power(nu, 2)/9 + path_delta_nu
@@ -485,6 +406,115 @@ third_order = adj_Gauss*(np.power(adj_z, 3) -3*adj_z)*k3/6.
 corrected = adj_Gauss + third_order
 corrected /= np.sum(corrected)
 Theory = corrected - Gauss
+
+NP_delta_nu = np.power(nu, 2)/9
+NP_adj_nu = nu+NP_delta_nu
+NP_delta_mu = -nu/2
+NP_adj_z = (x_grid-NP_delta_mu)/np.sqrt(NP_adj_nu)
+
+NP_adj_Gauss = []
+for x in x_grid:
+    up = (1/2)*(1 + erf((x+dx_grid/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
+    down = (1/2)*(1 + erf((x-dx_grid/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
+    NP_adj_Gauss.append((up-down)/dx_grid)
+NP_adj_Gauss = np.array(NP_adj_Gauss)
+NP_adj_Gauss /= np.sum(NP_adj_Gauss)
+
+NP_third_order = NP_adj_Gauss*(np.power(NP_adj_z, 3) -3*NP_adj_z)*k3/6.
+NP_corrected = NP_adj_Gauss + NP_third_order
+NP_corrected /= np.sum(NP_corrected)
+NP_Theory = NP_corrected - Gauss
+
+plt.clf()
+plt.plot(x_grid, Theory, color='gray', linewidth = 2)
+plt.plot(x_grid, NP_Theory, color='gray', linestyle='--', linewidth = 2)
+plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
+plt.xlabel(r'$x$', size=14)
+plt.ylabel(r'$\delta p$', size=14, rotation = 0)
+plt.legend(['Theory', r'$f_t = 0$ case'])
+plt.tight_layout()
+plt.savefig('PREVIEW_numerical_path_impact.pdf')
+
+print('Preview path impact !')
+
+## %%
+
+@njit
+def OU_init():
+    s = np.random.normal(0, sqrt_nu)
+    vec = []
+    for _ in range(n):
+        s = s*np.exp(-dt*sigma*np.sqrt(alpha)) + sigma*np.random.normal(0, np.sqrt(dt))
+        vec.append(s)
+    return np.array(vec)
+
+@njit
+def noise_calibration():
+    def space_time_noise():
+        return np.random.normal(0, noise_factor, n)
+    discrete_Var = 0.
+    discrete_Mean = 0.
+    n_samples = 0 
+    x = OU_init()
+    tau = np.float64(0.)
+    i = 0
+    while tau < T_MC*calibration_ratio:
+        tau += dtau
+        rhs = x - dtau * alpha * x + space_time_noise()
+        x = thomas_algorithm_Langevin(rhs)      
+        i += 1
+        if i == sampling:
+            i = 0
+            discrete_Mean += x[mid_n]
+            discrete_Var += x[mid_n]**2
+            n_samples += 1
+    discrete_Mean /= n_samples
+    discrete_Var /= n_samples
+    discrete_Var -= discrete_Mean**2
+    return discrete_Var / nu
+
+print(datetime.datetime.now())
+
+print('noise calibration...')
+cal_replicas = Parallel(n_jobs=n_cores)(delayed(noise_calibration)() for _ in tqdm(range(split_sim*n_cores)))
+Var_ratio = np.mean(cal_replicas)
+noise_correction = 1/np.sqrt(Var_ratio)
+adjusted_noise_factor = noise_factor*noise_correction
+print(noise_correction)
+print(datetime.datetime.now())
+
+## %%
+
+@njit
+def Langevin_statistics():
+    def space_time_noise():
+        return np.random.normal(0, adjusted_noise_factor, n)
+    vec = np.zeros(n_samples)
+    x = OU_init()
+    tau = np.float64(0.)
+    i = 0
+    while tau < T_MC:
+        tau += dtau
+        rhs = x - dtau * r_star * (np.exp(x) - 1) + space_time_noise()
+        x = thomas_algorithm_Langevin(rhs)      
+        i += 1
+        if i == sampling:
+            i = 0
+            if tau > tau_init:
+                x_cont = x[mid_n]/dx_grid +half_n_samples
+                if x_cont > 0.:
+                    j = int(x_cont)
+                    if j < n_samples:
+                        vec[j] += 1
+    return vec
+
+
+print('statistics...')
+replicas = Parallel(n_jobs=n_cores)(delayed(Langevin_statistics)() for _ in tqdm(range(split_sim*n_cores)))
+statistics = np.sum(replicas, axis = 0)
+statistics /= np.sum(statistics)
+numerical = statistics - Gauss
+print(datetime.datetime.now())
 
 plt.clf()
 plt.scatter(x_grid, numerical, color='black', s = 15)
@@ -530,25 +560,6 @@ num_k_3 = num_x_3 -3*(num_nu+num_delta_nu+num_delta_mu**2)*num_delta_mu +2*num_d
 num_k_3 /= np.power(num_nu+num_delta_nu+num_delta_mu**2, 3/2)
 print(k3)
 print(num_k_3)
-
-
-NP_delta_nu = np.power(nu, 2)/9
-NP_adj_nu = nu+NP_delta_nu
-NP_delta_mu = -nu/2
-NP_adj_z = (x_grid-NP_delta_mu)/np.sqrt(NP_adj_nu)
-
-NP_adj_Gauss = []
-for x in x_grid:
-    up = (1/2)*(1 + erf((x+dx_grid/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
-    down = (1/2)*(1 + erf((x-dx_grid/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
-    NP_adj_Gauss.append((up-down)/dx_grid)
-NP_adj_Gauss = np.array(NP_adj_Gauss)
-NP_adj_Gauss /= np.sum(NP_adj_Gauss)
-
-NP_third_order = NP_adj_Gauss*(np.power(NP_adj_z, 3) -3*NP_adj_z)*k3/6.
-NP_corrected = NP_adj_Gauss + NP_third_order
-NP_corrected /= np.sum(NP_corrected)
-NP_Theory = NP_corrected - Gauss
 
 
 plt.clf()
