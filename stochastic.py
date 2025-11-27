@@ -2,7 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.sparse import spdiags
 from scipy.special import erf
-from scipy.ndimage import shift
 from joblib import Parallel, delayed
 import multiprocessing
 from tqdm import tqdm
@@ -11,21 +10,21 @@ import datetime
 print(datetime.datetime.now())
 
 # model parameter
-sigma = 0.01
+sigma = 0.05
 
 # numerical estimation parameters
-n = 301 # must be ODD number for correctly placing the central node
+n = 231 # must be ODD number for correctly placing the central node
 integration_factor = 0.5
 MC_samples = int(3e5)
-exclude_path = False
 
 # CPUs usage
-fraction_cores = 0.5
+fraction_cores = 0.45
 
 # utils
-length_factor = 13.
-statistical_factor = 100.
-rescale = 500
+exclude_path = False
+length_factor = 12.
+statistical_factor = 5.
+rescale = 350
 dtau_ML_factor = 1e4
 n_std_grid = 6.
 n_samples = 100
@@ -57,8 +56,9 @@ n_cores = int(multiprocessing.cpu_count()*fraction_cores)
 dx_grid = 2*n_std_grid*np.sqrt(sigma/2)/n_samples
 x_grid = np.array([(i+0.5-n_samples/2)*dx_grid for i in range(n_samples)])
 split_sim = 10
-T_MC = statistical_factor*(1/(split_sim*n_cores))*8/np.power(sigma/9, 2)
+T_MC= statistical_factor*1e7*(1/(split_sim*n_cores))
 calibration_ratio = 0.2
+
 
 # semi-implicit Eulero utils
 main_diag = -2 * np.ones(n)
@@ -224,7 +224,7 @@ def compute_integral_J_montecarlo(t):
     return monte_carlo_estimate
 
 @njit
-def integrand_K_montecarlo(theta, phi, psi, t, tp):
+def integrand_K1_montecarlo(theta, phi, psi, t, tp):
     k = 1 / np.tan(theta)
     u = np.tan(phi)**2
     up = np.tan(psi)**2
@@ -238,17 +238,17 @@ def integrand_K_montecarlo(theta, phi, psi, t, tp):
     return term1 * term2 * np.exp(exp1_arg + exp2_arg) * jacobian_k * jacobian_u * jacobian_up
 
 @njit
-def compute_integral_K_montecarlo(t_val, tp_val):
+def compute_integral_K1_montecarlo(t_val, tp_val):
     theta_samples = np.random.uniform(0, np.pi, MC_samples)
     phi_samples = np.random.uniform(0, np.pi/2, MC_samples)
     psi_samples = np.random.uniform(0, np.pi/2, MC_samples)
-    integrand_values = integrand_K_montecarlo(theta_samples, phi_samples, psi_samples, t_val, tp_val)
+    integrand_values = integrand_K1_montecarlo(theta_samples, phi_samples, psi_samples, t_val, tp_val)
     volume_transformed = np.pi * (np.pi/2) * (np.pi/2)
     monte_carlo_estimate = volume_transformed * np.mean(integrand_values)  
     return monte_carlo_estimate
 
 @njit
-def integrand_Q_montecarlo(u_t_x, u_t_y, k_t_z, t, tprime):
+def integrand_K2_montecarlo(u_t_x, u_t_y, k_t_z, t, tprime):
     # u: [-inf, 0], u': [-inf, u], k: [-inf, inf]
     u = -np.tan(np.pi/2 * u_t_x)
     u_prime = u - np.tan(np.pi / 2 * u_t_y)
@@ -263,84 +263,82 @@ def integrand_Q_montecarlo(u_t_x, u_t_y, k_t_z, t, tprime):
     return integrand * jac_u * jac_u_prime * jac_k
     
 @njit
-def compute_integral_Q_montecarlo(t_val, tp_val):
+def compute_integral_K2_montecarlo(t_val, tp_val):
     u_t_x_samples = np.random.uniform(0.0, 1.0, MC_samples)
     u_t_y_samples = np.random.uniform(0.0, 1.0, MC_samples)
     k_t_z_samples = np.random.uniform(0.0, 1.0, MC_samples)
-    integrand_values = integrand_Q_montecarlo(u_t_x_samples, u_t_y_samples, k_t_z_samples, t_val, tp_val)
+    integrand_values = integrand_K2_montecarlo(u_t_x_samples, u_t_y_samples, k_t_z_samples, t_val, tp_val)
     monte_carlo_estimate = np.mean(integrand_values)  
     return monte_carlo_estimate
 
-beta = sigma*np.sqrt(alpha)
-
-@njit
-def integrand_J_alpha(k, tp):
-    sqrt_term = np.sqrt(2 + k**2)
-    abs_tp = np.abs(tp)
-    exponential_term = np.exp(-beta * abs_tp * sqrt_term)
-    term1 = k * tp * np.sin(beta * k * tp)
-    term2 = sqrt_term * abs_tp * np.cos(beta * k * tp)
-    numerator_content = term1 + term2 
-    numerator = numerator_content * exponential_term
-    denominator = (1 + k**2) * sqrt_term
-    return numerator / denominator
-
-@njit
-def mc_transf_J_alpha(u, tp):
-    k = (1.0 - u) / u
-    return np.where(u > 0, integrand_J_alpha(k, tp) / (u**2), 0.0)
-
-@njit
-def integral_J_alpha(tp):
-    u_samples = np.random.uniform(0.0, 1.0, MC_samples)
-    integrand_values = mc_transf_J_alpha(u_samples, tp)
-    integral_result_half = np.mean(integrand_values)
-    const_coeff = np.power(nu,3) *(2/np.pi)
-    monte_carlo_esimate = const_coeff * 2.0 * integral_result_half   
-    return monte_carlo_esimate
 
 
 print('Path integrals...')
 
 J = Parallel(n_jobs=n_cores)(
     delayed(compute_integral_J_montecarlo)(t) for t in t_from_point)
-pre_K = Parallel(n_jobs=n_cores)(
-    delayed(compute_integral_K_montecarlo)(t, tp) for t, tp in t_pairs)
-K = np.array(pre_K).reshape((n, n))
+pre_K1 = Parallel(n_jobs=n_cores)(
+    delayed(compute_integral_K1_montecarlo)(t, tp) for t, tp in t_pairs)
+K1 = np.array(pre_K1).reshape((n, n))
 constant_factor = (sigma**3) / (8 * np.pi**2)
-K = constant_factor * K
-pre_Q = Parallel(n_jobs=n_cores)(
-    delayed(compute_integral_Q_montecarlo)(t, tp) for t, tp in t_pairs)
-Q = np.array(pre_Q).reshape((n, n))
-J_alpha = Parallel(n_jobs=n_cores)(
-    delayed(integral_J_alpha)(t) for t in t_from_point)
+K1 = constant_factor * K1
+pre_K2 = Parallel(n_jobs=n_cores)(
+    delayed(compute_integral_K2_montecarlo)(t, tp) for t, tp in t_pairs)
+K2 = np.array(pre_K2).reshape((n, n))
+
 
 f = r_star - alpha
-path_integral = np.sum(f*J)*dt
-double_path_integral_K = np.sum(K * np.outer(f, f)) * dt**2
-double_path_integral_Q = np.sum(Q * np.outer(f, f)) * dt**2
+path_integral_J = np.sum(f*J)*dt
+double_path_integral_K1 = np.sum(K1 * np.outer(f, f)) * dt**2
+double_path_integral_K2 = np.sum(K2 * np.outer(f, f)) * dt**2
 
 
-term1 = -(3/8)*nu*np.power(f/alpha, 2)
-term2 = -(f/alpha) * np.sum(f*J)*dt + f * np.sum(f*J_alpha)*dt
-
-def f_shift (i):
-    return shift(f, shift=int(n/2)-i, cval=0.0)
-term3 = np.array([np.sum(J*(f_shift(i)-f))*dt for i in range(n)])
+G1u = nu*np.exp(-sigma*np.sqrt(alpha)*np.abs(t_from_point))
 
 
-spatial_var = term1 + term2 + term3
+G_f = np.zeros(n)
+G_ff = np.zeros((n, n))
+for i in range(n):
+    f_t_tp = np.roll(f, mid_n-i)
+    gap_i = abs(mid_n-i)
+    if gap_i > 0:
+        G_f[i] = np.sum((G1u*f_t_tp)[gap_i: -gap_i])*dt
+    else:
+        G_f[i] = np.sum(G1u*f_t_tp)*dt
+    for j in range(n):
+        f_t_tpp = np.roll(f, mid_n-j)
+        gap_j = abs(mid_n - j)
+        if gap_i == 0 and gap_j == 0:
+            G_ff[i, j] = np.sum(G1u*f_t_tp*f_t_tpp)*dt
+        elif gap_j > gap_i:
+            G_ff[i, j] = np.sum((G1u*f_t_tp*f_t_tpp)[gap_j: -gap_j])*dt
+        else:
+            G_ff[i, j] = np.sum((G1u*f_t_tp*f_t_tpp)[gap_i: -gap_i])*dt
 
-G_t = nu * np.exp(-sigma*np.sqrt(alpha)*np.abs(t_from_point))
-x_correction = -(alpha/2)*np.sum(G_t*spatial_var)*dt
+spatial_var_correction = -(alpha/2)*(np.sum(J*G_f)*dt + np.sum((K1+K2)*G_ff)*dt**2) 
 
+delta_Gf_f = G_f - f/alpha
+overline_f0_delta_Gf_f = np.zeros(n)
+for i in range(n):
+    delta_Gf_f_t_tp = np.roll(delta_Gf_f, mid_n-i)
+    gap_i = abs(mid_n-i)
+    if gap_i > 0:
+        overline_f0_delta_Gf_f[i] = np.sum((G1u*f*delta_Gf_f_t_tp)[gap_i: -gap_i])*dt
+    else:
+        overline_f0_delta_Gf_f[i] = np.sum(G1u*f*delta_Gf_f_t_tp)*dt
 
-path_delta_nu = path_integral + double_path_integral_K + double_path_integral_Q
+path_var_excess = (alpha/2)*np.sum(J*overline_f0_delta_Gf_f)*dt
 
-print(path_integral/np.power(nu, 2))
-print(double_path_integral_K/np.power(nu, 2))
-print(double_path_integral_Q/np.power(nu, 2))
-print(x_correction/np.power(nu, 2))
+x_correction = spatial_var_correction + path_var_excess
+
+path_delta_nu = path_integral_J + double_path_integral_K1 + double_path_integral_K2
+
+print(path_integral_J/np.power(nu, 2))
+print(double_path_integral_K1/np.power(nu, 2))
+print(double_path_integral_K2/np.power(nu, 2))
+print(spatial_var_correction/np.power(nu, 2))
+print(path_var_excess/np.power(nu, 2))
+
 
 plt.clf()
 plt.plot(t_grid, f*J, color='black', linewidth = 1.5)
@@ -350,45 +348,62 @@ plt.axvline(t_grid[mid_n], color = 'gray', linestyle = 'dashed', linewidth = 0.5
 plt.axhline(0., color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.xlim(t_grid[0], t_grid[-1])
 plt.tight_layout()
-plt.savefig('path_integral.pdf')
+plt.savefig('J_integral.pdf')
 
 plt.clf()
-plt.plot(t_grid, G_t*spatial_var, color='black', linewidth = 1.5)
+plt.plot(t_grid, f*J, color='black', linewidth = 1.5)
 plt.xlabel('$t$', size=14)
-plt.ylabel(r'$u_t \, G_t$', size = 14, rotation = 0)
+plt.ylabel(r'$f_t \, J_t$', size = 14, rotation = 0)
 plt.axvline(t_grid[mid_n], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.axhline(0., color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.xlim(t_grid[0], t_grid[-1])
 plt.tight_layout()
-plt.savefig('spatial_var_correction_integral.pdf')
+plt.savefig('var_J_correction.pdf')
 
 plt.clf()
-plt.imshow(K * np.outer(f, f), extent=[t_grid[0], t_grid[-1], t_grid[0], t_grid[-1]], cmap='Greys', origin='lower', interpolation='None')
+plt.plot(t_grid, J*overline_f0_delta_Gf_f, color='black', linewidth = 1.5)
+plt.xlabel('$t$', size=14)
+plt.ylabel(r'$J_{t} \overline{f_0 \left(\overline{f_{t}} -\frac{1}{\alpha}f_{t} \right)}$', size = 14, rotation = 0)
+plt.axvline(t_grid[mid_n], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
+plt.axhline(0., color = 'gray', linestyle = 'dashed', linewidth = 0.5)
+plt.xlim(t_grid[0], t_grid[-1])
+plt.tight_layout()
+plt.savefig('var_excess.pdf')
+
+plt.clf()
+plt.imshow(K1 * np.outer(f, f), extent=[t_grid[0], t_grid[-1], t_grid[0], t_grid[-1]], cmap='Greys', origin='lower', interpolation='None')
 plt.xlabel('$t$', size=14)
 plt.ylabel("$t'$", size=14, rotation = 0)
 plt.tight_layout()
-plt.savefig('path_double_integral_K.pdf')
+plt.savefig('double_K1.pdf')
 
 plt.clf()
-plt.imshow(Q * np.outer(f, f), extent=[t_grid[0], t_grid[-1], t_grid[0], t_grid[-1]], cmap='Greys', origin='lower', interpolation='None')
+plt.imshow(K2 * np.outer(f, f), extent=[t_grid[0], t_grid[-1], t_grid[0], t_grid[-1]], cmap='Greys', origin='lower', interpolation='None')
 plt.xlabel('$t$', size=14)
 plt.ylabel("$t'$", size=14, rotation = 0)
 plt.tight_layout()
-plt.savefig('path_double_integral_Q.pdf')
+plt.savefig('double_K2.pdf')
+
+plt.clf()
+plt.imshow((K1+K2)*G_ff, extent=[t_grid[0], t_grid[-1], t_grid[0], t_grid[-1]], cmap='Greys', origin='lower', interpolation='None')
+plt.xlabel('$t$', size=14)
+plt.ylabel("$t'$", size=14, rotation = 0)
+plt.tight_layout()
+plt.savefig('double_K_G_ff.pdf')
+
 
 
 np.save('t_grid.npy', t_grid)
 np.save('f.npy', f)
 np.save('J.npy', J)
-np.save('K.npy', K)
-np.save('Q.npy', Q)
-np.save('J_alpha.npy', J_alpha)
+np.save('K1.npy', K1)
+np.save('K2.npy', K2)
 
 
 z = x_grid/sqrt_nu
 delta_nu = np.power(nu, 2)/9 + path_delta_nu
 adj_nu = nu+delta_nu
-delta_mu = -(nu + path_delta_nu)/2 + x_correction
+delta_mu = -nu/2 + x_correction
 
 adj_sqrt_nu = np.sqrt(adj_nu)
 
