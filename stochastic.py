@@ -10,28 +10,28 @@ import datetime
 print(datetime.datetime.now())
 
 # model parameter
-sigma = 0.05
+sigma = 0.02
 
 # numerical estimation parameters
-n = 231 # must be ODD number for correctly placing the central node
-integration_factor = 0.5
-MC_samples = int(3e5)
+n = 301 # must be ODD number for correctly placing the central node
+integration_factor = 1.
+statistical_factor = 2.
+MC_samples = int(5e5)
 
 # CPUs usage
-fraction_cores = 0.45
+fraction_cores = 0.5
 
 # utils
 exclude_path = False
-length_factor = 12.
-statistical_factor = 5.
+length_factor = 10.
 rescale = 350
-dtau_ML_factor = 1e4
+dtau_ML_factor = 2e3
 n_std_grid = 6.
-n_samples = 100
+n_samples = 50
 half_n_samples = n_samples/2
 n_ML = n*rescale
-T_ML = 10. #note s_0 is around 1., timescale roughly 1. independent of sigma
-corr_length = 1/sigma #note s_0 = 1. 
+T_ML = 10. #note alpha \sim r_0 = 1., SPDE timescale roughly 1. independent of sigma
+corr_length = 1/sigma #note alpha \sim r_0 = 1.
 tau_init = 3.
 dtau = (1e-4/integration_factor)*(length_factor**2)*(corr_length**2)/(n**2)
 dtau_ML = dtau_ML_factor*dtau/np.power(rescale, 2)
@@ -55,6 +55,9 @@ border_terms = (left_border_vec-right_border_vec)/2
 n_cores = int(multiprocessing.cpu_count()*fraction_cores)
 dx_grid = 2*n_std_grid*np.sqrt(sigma/2)/n_samples
 x_grid = np.array([(i+0.5-n_samples/2)*dx_grid for i in range(n_samples)])
+factor_long = 100
+dx_grid_long = dx_grid/factor_long
+x_grid_long = np.array([(i+0.5-factor_long*n_samples/2)*dx_grid_long for i in range(factor_long*n_samples)])
 split_sim = 10
 T_MC= statistical_factor*1e7*(1/(split_sim*n_cores))
 calibration_ratio = 0.2
@@ -171,14 +174,21 @@ r_star = reduce_optimum(long_optimum) #actually exp(s_star)
 alpha = r_star[mid_n]
 nu = sigma/(2*np.sqrt(alpha)) 
 sqrt_nu = np.sqrt(nu)
+beta = sigma*np.sqrt(alpha)
+
 
 Gauss = []
-for x in x_grid:
-    up = (1/2)*(1 + erf((x+dx_grid/2)/np.sqrt(2*nu)))
-    down = (1/2)*(1 + erf((x-dx_grid/2)/np.sqrt(2*nu)))
-    Gauss.append((up-down)/dx_grid)
+for x in x_grid_long:
+    up = (1/2)*(1 + erf((x+dx_grid_long/2)/np.sqrt(2*nu)))
+    down = (1/2)*(1 + erf((x-dx_grid_long/2)/np.sqrt(2*nu)))
+    Gauss.append((up-down)/dx_grid_long)
 Gauss = np.array(Gauss)
 Gauss /= np.sum(Gauss)
+
+small_Gauss = []
+for i in range(n_samples):
+    small_Gauss.append(np.sum(Gauss[i*factor_long:(i+1)*factor_long]))
+small_Gauss = np.array(small_Gauss)
 
 
 print(datetime.datetime.now())
@@ -187,7 +197,7 @@ plt.clf()
 plt.plot(t_grid_ML, r_t, color = 'gray', linewidth = 0.8)
 plt.plot(t_grid_ML, long_optimum, color = 'black', linewidth = 1.)
 plt.axvline(t_grid_ML[mid_n_ML], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
-plt.ylim(0.5*np.min(long_optimum), 1.5*np.max(long_optimum))
+plt.ylim(0.5*np.min(long_optimum), 1.35*np.max(long_optimum))
 plt.xlim(t_grid[0], t_grid[-1])
 plt.legend(['$r$', '$\exp(s^*)$'], fontsize = 14)
 plt.xlabel('$t$', size = 14, rotation = 0)
@@ -202,75 +212,60 @@ np.save('time_series.npy', time_series)
 
 ## %%
 
-@njit
-def integrand_J(k, t, alpha, sigma):
-    sqrt_term = np.sqrt(2 * alpha + k**2)
-    numerator = np.cos(k * sigma * t) * np.exp(-sigma * np.abs(t) * sqrt_term)
-    denominator = (alpha + k**2) * sqrt_term
-    return numerator / denominator
-
-@njit
-def integrand_J_mc(u, t):
-    k = (1 - u) / u
-    return np.where(u > 0, integrand_J(k, t, alpha, sigma) / (u**2), 0)
 
 @njit
 def compute_integral_J_montecarlo(t):
-    u_samples = np.random.uniform(0, 1, 10*MC_samples)
-    integrand_values = integrand_J_mc(u_samples, t)
-    integral_result = np.mean(integrand_values)
-    constant_factor = (sigma**2) / (2 * np.pi)
-    monte_carlo_estimate = - constant_factor * 2 * integral_result
-    return monte_carlo_estimate
+    Exp_factor = beta*np.abs(t)
+    Cos_factor = beta*t
+    theta_max = np.pi / 2.0
+    theta = np.random.uniform(0.0, theta_max, n*MC_samples)
+    k = np.tan(theta)
+    Sqrt_term = np.sqrt(2.0 + k**2)
+    Inv_Sqrt_term = 1.0 / Sqrt_term
+    Exp_arg = -Exp_factor * Sqrt_term
+    Cos_arg = Cos_factor * k
+    prefactor = 4.0 / np.pi    
+    g_theta = prefactor * Inv_Sqrt_term * np.cos(Cos_arg) * np.exp(Exp_arg)
+    integral_estimate = - nu**2 * (theta_max / (n*MC_samples)) * np.sum(g_theta)
+    return integral_estimate
 
 @njit
-def integrand_K1_montecarlo(theta, phi, psi, t, tp):
-    k = 1 / np.tan(theta)
-    u = np.tan(phi)**2
-    up = np.tan(psi)**2
-    jacobian_k = (1 / np.sin(theta))**2
-    jacobian_u = 2 * np.tan(phi) * (1 / np.cos(phi))**2
-    jacobian_up = 2 * np.tan(psi) * (1 / np.cos(psi))**2  
-    term1 = 1.0 / (np.sqrt(u * up) * (alpha + k**2))
-    term2 = np.cos(k * sigma * (t - tp))
-    exp1_arg = -alpha * (u + up) - (sigma**2 / 4) * (t**2/u + tp**2/up)
-    exp2_arg = -(alpha + k**2) * np.abs(u - up)  
-    return term1 * term2 * np.exp(exp1_arg + exp2_arg) * jacobian_k * jacobian_u * jacobian_up
+def compute_integral_K1_montecarlo(t, t_prime):
+    Exp_factor = beta*(np.abs(t - t_prime) + np.abs(t))
+    Cos_factor = beta*t_prime
+    theta_max = np.pi / 2.0
+    theta = np.random.uniform(0.0, theta_max, MC_samples)
+    k = np.tan(theta)
+    Denominator = 1.0 / (2.0 + k**2)
+    Sqrt_term = np.sqrt(2.0 + k**2)
+    Exp_arg = -Exp_factor * Sqrt_term
+    Cos_arg = Cos_factor * k
+    prefactor = 4.0 / np.pi   
+    g_theta = prefactor * Denominator * np.cos(Cos_arg) * np.exp(Exp_arg)
+    integral_estimate = nu**3 * (theta_max / MC_samples) * np.sum(g_theta)
+    return integral_estimate
 
 @njit
-def compute_integral_K1_montecarlo(t_val, tp_val):
-    theta_samples = np.random.uniform(0, np.pi, MC_samples)
-    phi_samples = np.random.uniform(0, np.pi/2, MC_samples)
-    psi_samples = np.random.uniform(0, np.pi/2, MC_samples)
-    integrand_values = integrand_K1_montecarlo(theta_samples, phi_samples, psi_samples, t_val, tp_val)
-    volume_transformed = np.pi * (np.pi/2) * (np.pi/2)
-    monte_carlo_estimate = volume_transformed * np.mean(integrand_values)  
-    return monte_carlo_estimate
-
-@njit
-def integrand_K2_montecarlo(u_t_x, u_t_y, k_t_z, t, tprime):
-    # u: [-inf, 0], u': [-inf, u], k: [-inf, inf]
-    u = -np.tan(np.pi/2 * u_t_x)
-    u_prime = u - np.tan(np.pi / 2 * u_t_y)
-    k = np.tan(np.pi * (k_t_z - 0.5))
-    jac_u = (np.pi/2) * (1 / np.cos(np.pi/2 * u_t_x))**2
-    jac_u_prime = (np.pi/2) * (1 / np.cos(np.pi/2 * u_t_y))**2
-    jac_k = np.pi * (1 / np.cos(np.pi * (k_t_z - 0.5)))**2
-    g_minus_t_u = (sigma / (2 * np.sqrt(-np.pi * u))) * np.exp(alpha * u + (sigma**2 * t**2) / (4 * u))
-    g_t_minus_tprime_u_minus_uprime = (sigma / (2 * np.sqrt(np.pi * (u - u_prime)))) * np.exp(-alpha * (u - u_prime) - (sigma**2 * (t - tprime)**2) / (4 * (u - u_prime)))
-    c_tprime_uprime = (sigma / (2 * np.pi)) * (np.cos(k * sigma * tprime) / (alpha + k**2)) * np.exp(-(alpha + k**2) * np.abs(u_prime))
-    integrand = 2 * g_minus_t_u * g_t_minus_tprime_u_minus_uprime * c_tprime_uprime
-    return integrand * jac_u * jac_u_prime * jac_k
-    
-@njit
-def compute_integral_K2_montecarlo(t_val, tp_val):
-    u_t_x_samples = np.random.uniform(0.0, 1.0, MC_samples)
-    u_t_y_samples = np.random.uniform(0.0, 1.0, MC_samples)
-    k_t_z_samples = np.random.uniform(0.0, 1.0, MC_samples)
-    integrand_values = integrand_K2_montecarlo(u_t_x_samples, u_t_y_samples, k_t_z_samples, t_val, tp_val)
-    monte_carlo_estimate = np.mean(integrand_values)  
-    return monte_carlo_estimate
-
+def compute_integral_K2_montecarlo(t, t_prime):
+    R1 = np.abs(t - t_prime) + np.abs(t) + np.abs(t_prime)
+    R2 = np.abs(t) - np.abs(t_prime)
+    R3 = np.abs(t - t_prime)
+    theta_max = np.pi / 2.0
+    theta = np.random.uniform(0.0, theta_max, MC_samples)
+    cos_theta = np.cos(theta)
+    sec_theta = 1.0 / (cos_theta + 1e-20)
+    A_theta = np.sqrt((sec_theta - 1.0) / 2.0)
+    B_theta = np.sqrt((sec_theta + 1.0) / 2.0)
+    Exp_arg = -beta * R1  * B_theta
+    Cos1_arg = beta * R2 * A_theta
+    Cos2_arg = beta * R3 * A_theta
+    A_over_tan = (1.0 / (2.0 * np.cos(theta / 2.0))) * np.sqrt(cos_theta)
+    g_pre = (1.0 / np.pi) * A_over_tan
+    g_theta = g_pre * np.exp(Exp_arg) * np.cos(Cos1_arg) * np.cos(Cos2_arg)
+    integral_estimate_0_to_inf = (theta_max / MC_samples) * np.sum(g_theta)
+    integral_estimate_neg_inf_to_inf = 2.0 * integral_estimate_0_to_inf
+    integral_estimate = nu**3 * integral_estimate_neg_inf_to_inf
+    return integral_estimate
 
 
 print('Path integrals...')
@@ -280,8 +275,6 @@ J = Parallel(n_jobs=n_cores)(
 pre_K1 = Parallel(n_jobs=n_cores)(
     delayed(compute_integral_K1_montecarlo)(t, tp) for t, tp in t_pairs)
 K1 = np.array(pre_K1).reshape((n, n))
-constant_factor = (sigma**3) / (8 * np.pi**2)
-K1 = constant_factor * K1
 pre_K2 = Parallel(n_jobs=n_cores)(
     delayed(compute_integral_K2_montecarlo)(t, tp) for t, tp in t_pairs)
 K2 = np.array(pre_K2).reshape((n, n))
@@ -343,7 +336,7 @@ print(path_var_excess/np.power(nu, 2))
 plt.clf()
 plt.plot(t_grid, f*J, color='black', linewidth = 1.5)
 plt.xlabel('$t$', size=14)
-plt.ylabel(r'$f_t \, J_t$', size = 14, rotation = 0)
+plt.ylabel(r'$J_t \, f_t$', size = 14, rotation = 0, labelpad = 15)
 plt.axvline(t_grid[mid_n], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.axhline(0., color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.xlim(t_grid[0], t_grid[-1])
@@ -351,9 +344,9 @@ plt.tight_layout()
 plt.savefig('J_integral.pdf')
 
 plt.clf()
-plt.plot(t_grid, f*J, color='black', linewidth = 1.5)
+plt.plot(t_grid, G_f*J, color='black', linewidth = 1.5)
 plt.xlabel('$t$', size=14)
-plt.ylabel(r'$f_t \, J_t$', size = 14, rotation = 0)
+plt.ylabel(r'$J_t \, \overline{f_{t}}$', size = 14, rotation = 0, labelpad = 15)
 plt.axvline(t_grid[mid_n], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.axhline(0., color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.xlim(t_grid[0], t_grid[-1])
@@ -361,9 +354,9 @@ plt.tight_layout()
 plt.savefig('var_J_correction.pdf')
 
 plt.clf()
-plt.plot(t_grid, J*overline_f0_delta_Gf_f, color='black', linewidth = 1.5)
+plt.plot(t_grid, overline_f0_delta_Gf_f*J, color='black', linewidth = 1.5)
 plt.xlabel('$t$', size=14)
-plt.ylabel(r'$J_{t} \overline{f_0 \left(\overline{f_{t}} -\frac{1}{\alpha}f_{t} \right)}$', size = 14, rotation = 0)
+plt.ylabel(r'$J_{t} \, \overline{f_0 \left(\overline{f_{t}} -\frac{1}{\alpha}f_{t} \right)}$', size = 14, labelpad = 15)
 plt.axvline(t_grid[mid_n], color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.axhline(0., color = 'gray', linestyle = 'dashed', linewidth = 0.5)
 plt.xlim(t_grid[0], t_grid[-1])
@@ -408,14 +401,14 @@ delta_mu = -nu/2 + x_correction
 adj_sqrt_nu = np.sqrt(adj_nu)
 
 adj_Gauss = []
-for x in x_grid:
-    up = (1/2)*(1 + erf((x+dx_grid/2-delta_mu)/np.sqrt(2*adj_nu)))
-    down = (1/2)*(1 + erf((x-dx_grid/2-delta_mu)/np.sqrt(2*adj_nu)))
-    adj_Gauss.append((up-down)/dx_grid)
+for x in x_grid_long:
+    up = (1/2)*(1 + erf((x+dx_grid_long/2-delta_mu)/np.sqrt(2*adj_nu)))
+    down = (1/2)*(1 + erf((x-dx_grid_long/2-delta_mu)/np.sqrt(2*adj_nu)))
+    adj_Gauss.append((up-down)/dx_grid_long)
 adj_Gauss = np.array(adj_Gauss)
 adj_Gauss /= np.sum(adj_Gauss)
 
-adj_z = (x_grid-delta_mu)/np.sqrt(adj_nu)
+adj_z = (x_grid_long-delta_mu)/np.sqrt(adj_nu)
 k3 = -np.sqrt(nu)/3
 third_order = adj_Gauss*(np.power(adj_z, 3) -3*adj_z)*k3/6.
 corrected = adj_Gauss + third_order
@@ -425,13 +418,13 @@ Theory = corrected - Gauss
 NP_delta_nu = np.power(nu, 2)/9
 NP_adj_nu = nu+NP_delta_nu
 NP_delta_mu = -nu/2
-NP_adj_z = (x_grid-NP_delta_mu)/np.sqrt(NP_adj_nu)
+NP_adj_z = (x_grid_long-NP_delta_mu)/np.sqrt(NP_adj_nu)
 
 NP_adj_Gauss = []
-for x in x_grid:
-    up = (1/2)*(1 + erf((x+dx_grid/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
-    down = (1/2)*(1 + erf((x-dx_grid/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
-    NP_adj_Gauss.append((up-down)/dx_grid)
+for x in x_grid_long:
+    up = (1/2)*(1 + erf((x+dx_grid_long/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
+    down = (1/2)*(1 + erf((x-dx_grid_long/2-NP_delta_mu)/np.sqrt(2*NP_adj_nu)))
+    NP_adj_Gauss.append((up-down)/dx_grid_long)
 NP_adj_Gauss = np.array(NP_adj_Gauss)
 NP_adj_Gauss /= np.sum(NP_adj_Gauss)
 
@@ -441,11 +434,11 @@ NP_corrected /= np.sum(NP_corrected)
 NP_Theory = NP_corrected - Gauss
 
 plt.clf()
-plt.plot(x_grid, Theory, color='gray', linewidth = 2)
-plt.plot(x_grid, NP_Theory, color='gray', linestyle='--', linewidth = 2)
+plt.plot(x_grid_long, Theory/dx_grid_long, color='gray', linewidth = 2)
+plt.plot(x_grid_long, NP_Theory/dx_grid_long, color='gray', linestyle='--', linewidth = 2)
 plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
 plt.xlabel(r'$x$', size=14)
-plt.ylabel(r'$\delta p$', size=14, rotation = 0)
+plt.ylabel(r'$\delta p$', size=14, rotation = 0, labelpad = 15)
 plt.legend(['Theory', r'$f_t = 0$ case'])
 plt.tight_layout()
 plt.savefig('PREVIEW_numerical_path_impact.pdf')
@@ -524,23 +517,14 @@ def Langevin_statistics():
     return vec
 
 
+
 print('statistics...')
 replicas = Parallel(n_jobs=n_cores)(delayed(Langevin_statistics)() for _ in tqdm(range(split_sim*n_cores)))
 statistics = np.sum(replicas, axis = 0)
 statistics /= np.sum(statistics)
-numerical = statistics - Gauss
+numerical = statistics - small_Gauss
 print(datetime.datetime.now())
 
-plt.clf()
-plt.scatter(x_grid, numerical, color='black', s = 15)
-plt.plot(x_grid, Theory, color='gray', linewidth = 2)
-plt.plot(x_grid, adj_Gauss - Gauss, color='gray', linestyle='--', linewidth = 2)
-plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
-plt.xlabel(r'$x$', size=14)
-plt.ylabel(r'$\delta p$', size=14, rotation = 0)
-plt.legend(['numerical', '3rd order', '2nd order'])
-plt.tight_layout()
-plt.savefig('dp_orders.pdf')
 
 np.save('x_grid.npy', x_grid)
 np.save('numerical.npy', numerical)
@@ -549,10 +533,9 @@ np.save('adj_Gauss.npy', adj_Gauss)
 np.save('Gauss.npy', Gauss)
 
 
-num_nu = np.sum(Gauss*np.power(x_grid, 2))
+num_nu = np.sum(Gauss*np.power(x_grid_long, 2))
 num_delta_mu = np.sum(statistics*x_grid)
 num_delta_nu = np.sum(statistics*np.power(x_grid, 2)) -np.power(num_delta_mu, 2) -num_nu
-
 
 print('numerical ratio')
 print((num_nu-nu)/nu)
@@ -578,27 +561,32 @@ print(num_k_3)
 
 
 plt.clf()
-plt.scatter(x_grid, numerical, color='black', s=15)
-plt.plot(x_grid, Theory, color='gray', linewidth = 2)
-plt.plot(x_grid, NP_Theory, color='gray', linestyle='--', linewidth = 2)
+plt.scatter(x_grid, numerical/dx_grid, color='black', s=20)
+plt.plot(x_grid_long, Theory/dx_grid_long, color='gray', linewidth = 2)
+plt.plot(x_grid_long, NP_Theory/dx_grid_long, color='gray', linestyle='--', linewidth = 2)
 plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
 plt.xlabel(r'$x$', size=14)
-plt.ylabel(r'$\delta p$', size=14, rotation = 0)
+plt.ylabel(r'$\delta p$', size=14, rotation = 0, labelpad = 15)
 plt.legend(['Numerical', 'Theory', r'$f_t = 0$ case'])
 plt.tight_layout()
 plt.savefig('numerical_path_impact.pdf')
 
 np.save('NP_Theory.npy', NP_Theory)
 
+small_NP_Theory = []
+for i in range(n_samples):
+    small_NP_Theory.append(np.sum(NP_Theory[i*factor_long:(i+1)*factor_long]))
+small_NP_Theory = np.array(small_NP_Theory)
+
+
 plt.clf()
-plt.scatter(x_grid, numerical-NP_Theory, color='black', s=15)
-plt.plot(x_grid, Theory-NP_Theory, color='gray', linewidth = 2)
+plt.scatter(x_grid, (numerical-small_NP_Theory)/dx_grid, color='black', s=20)
+plt.plot(x_grid_long, (Theory-NP_Theory)/dx_grid_long, color='gray', linewidth = 2)
 plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
 plt.xlabel('$x$', size=14)
-plt.ylabel(r'$\widetilde{\delta p}$', size=14, rotation = 0)
+plt.ylabel(r'$\delta p-\widetilde{\delta p}$', size=14, rotation = 0, labelpad = 15)
 plt.legend(['Numerical', 'Theory'])
 plt.tight_layout()
 plt.savefig('numerical_path_only.pdf')
-
 
 
