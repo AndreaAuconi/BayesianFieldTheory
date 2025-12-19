@@ -13,18 +13,18 @@ print(datetime.datetime.now())
 sigma = 0.02
 
 # numerical estimation parameters
-n = 301 # must be ODD number for correctly placing the central node
+n = 251 # must be ODD number for correctly placing the central node
 integration_factor = 1.
 statistical_factor = 2.
-MC_samples = int(5e5)
+MC_samples = int(2e5)
 
 # CPUs usage
-fraction_cores = 0.5
+fraction_cores = 1.
 
 # utils
 exclude_path = False
 length_factor = 10.
-rescale = 350
+rescale = 300
 dtau_ML_factor = 2e3
 n_std_grid = 6.
 n_samples = 50
