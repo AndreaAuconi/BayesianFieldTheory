@@ -17,11 +17,13 @@ import os
 import datetime
 print(datetime.datetime.now())
 
-fraction_cores = 0.98
+fraction_cores = 0.33
 
 # preprocessing parameters
 only_Patricians = False
+only_NonPatricians = False
 print('Only Patricians = ', only_Patricians)
+print('Only Non-Patricians = ', only_NonPatricians)
 load_names_dict = True
 cut = 1379.
 citations_max_gap = 15 # out if you are cited only once in more than _ years
@@ -32,25 +34,29 @@ min_cits = 2 # fixed by model choice # DO NOT CHANGE
 
 # lambda estimation parameters
 init_Year = 1334.5 # for the lambda estimation at border
-upper_citations = 50 # +2, (i,f) #(the most cited are not counted for the lambda estimation)
-lambda_Variance = 0.2 # uncertainty on lambda
+upper_citations = 200#Tutti # +2, (i,f) #(the most cited are not counted for the lambda estimation)
+lambda_Variance = 0.15 # uncertainty on lambda
 n_samples = 100 # for the lambda exp distr factor
 
 time_window = 7. #period pestem in deaths fraction estimation
 
 # numerical parameters
-n = 320
-T_MC = 2000
+n = 300
+T_MC = 400
 T_MC_init = 0.05*T_MC
 dtau = 0.0025
 n_replicas = 200
 sampling = int(1e2)
-max_r = 0.2
+max_r = 0.23
 T_init = 5.
 
 # T_0 prior (uninformative)
-B_init = -6.
-A_init = 6.
+#B_init = -6.
+#A_init = 6.
+
+n_sigma = 140
+sigma_list = [0.01*(1.035**i) for i in range(n_sigma)]
+
 
 n_cores = int(multiprocessing.cpu_count()*fraction_cores)
 
@@ -75,13 +81,17 @@ data_types = {
     'TimeSpan': float,
 }
 
-filtered = pd.read_csv('People_3dicFinal.csv', sep=';',
+filtered = pd.read_excel('People_3dicFinal2vc.xls',
                        header=None, names=column_names, dtype=data_types,
                        decimal=',')
+
+
 filtered = filtered[filtered['Type'] != 'x']
 
 if only_Patricians:
-   filtered = filtered[filtered['Type'] == 'p'] 
+   filtered = filtered[(filtered['Type'] == 'pn') | (filtered['Type'] == 'pv')]
+elif only_NonPatricians:
+    filtered = filtered[(filtered['Type'] == 'n') | (filtered['Type'] == 'p')]
 
 
 filtered['t_m'] = filtered['t_m'].apply(ast.literal_eval)
@@ -168,22 +178,31 @@ right_border_vec[-1] = 1
 
 print('Sampling Q ...')
 
-def Q_sampling(n_samples):
-    def get_Q (xi):
-        return np.array([[np.prod(1-xi*lam_freq[t1: t2+1]*dt) for t2 in range(n)] for t1 in range(n)])
-    Q = np.zeros(shape=(n, n))
-    for _ in range(n_samples):
-        xi = np.random.lognormal(-0.5*lambda_Variance, np.sqrt(lambda_Variance))
-        Q += get_Q (xi)
-    Q /= n_samples
-    return Q
+if lambda_Variance > 0:
+    
+    def Q_sampling(n_samples):
+        def get_Q (xi):
+            return np.array([[np.prod(1-xi*lam_freq[t1: t2+1]*dt) for t2 in range(n)] for t1 in range(n)])
+        Q = np.zeros(shape=(n, n))
+        for _ in range(n_samples):
+            xi = np.random.lognormal(-0.5*lambda_Variance, np.sqrt(lambda_Variance))
+            Q += get_Q (xi)
+        Q /= n_samples
+        return Q
+    
+    Q_samples = Parallel(n_jobs=n_cores)(delayed(Q_sampling)(n_samples) for _ in tqdm(range(100)))
+    Q = np.mean(Q_samples, axis = 0)
 
-Q_samples = Parallel(n_jobs=n_cores)(delayed(Q_sampling)(n_samples) for _ in tqdm(range(100)))
-Q = np.mean(Q_samples, axis = 0)
+else:
+    Q = np.array([[np.prod(1-lam_freq[t1: t2+1]*dt) for t2 in range(n)] for t1 in range(n)])
+    
 
 plt.clf()
 plt.imshow(Q)
 plt.savefig('Q.pdf')
+
+np.savetxt("Q_matrix.txt", Q, fmt="%.6f")
+np.savetxt("lambda_t.txt", lam_freq, fmt="%.6f")
 
 
 # %%
@@ -205,6 +224,8 @@ for k in filtered.index:
 
 names = np.array(names)
 stories = np.array(stories)
+
+print(str(len(stories)) + " people")
 
 
 # %%
@@ -253,9 +274,6 @@ print('Saddle point approximation...')
 
 # SADDLE POINT APPROX
 param_sigma_prior = 0.#uninformative
-
-n_sigma = 140
-sigma_list = [0.01*(1.035**i) for i in range(n_sigma)]
 
 
 @njit
@@ -351,12 +369,12 @@ def Hessian_V_s_data (r):
 def U_opt(r_opt, sigma_prime):
     s_opt = np.log(r_opt)
     Qvar = np.sum(np.power(np.roll(s_opt, -1) - s_opt, 2)[:-1])
-    terms_prior = np.power(s_opt[0]-B_init, 2)/(2*A_init) + (s_opt[-1]-s_opt[0])/2 +Qvar/(2*np.power(sigma_prime, 2)*dt)
+    terms_prior = (s_opt[-1]-s_opt[0])/2 +Qvar/(2*np.power(sigma_prime, 2)*dt) #+np.power(s_opt[0]-B_init, 2)/(2*A_init)
     terms_measurement = V_data (r_opt)
     return terms_prior + terms_measurement
 
 def log_det_H_opt(r_opt, sigma_prime):
-    m_diag = left_border_vec/A_init + 2/(np.power(sigma_prime, 2)*dt)
+    m_diag = np.ones(n)*2/(np.power(sigma_prime, 2)*dt) # +left_border_vec/A_init
     up_down = -np.ones(shape = (len(m_diag)-1))/(np.power(sigma_prime, 2)*dt)
     H_prior = csc_matrix(diags([m_diag, up_down, up_down], [0, 1, -1])).toarray()
     H_data = Hessian_V_s_data(r_opt)
@@ -405,7 +423,7 @@ def saddle_point (sigma_prime):
         tau = np.float64(0.)
         while tau < T_init:
             tau += dtau
-            border_terms = -left_border_vec*(x-B_init)/A_init + (left_border_vec-right_border_vec)/2
+            border_terms = (left_border_vec-right_border_vec)/2 # -left_border_vec*(x-B_init)/A_init 
             rhs = x + (dtau/dt) * (-dV_ds_data(np.exp(x)) + border_terms)
             x = thomas_algorithm_Langevin(rhs) 
         return x
@@ -448,6 +466,10 @@ plt.ylabel('$p(\sigma | D)$', size = 15, rotation = 0)
 plt.xlabel('$\sigma$', size = 14)
 plt.tight_layout()
 plt.savefig('log_sigma_posterior_log_scale.pdf')
+
+np.savetxt("sigma_list.txt", sigma_list, fmt="%.6f")
+np.savetxt("sigma_posterior.txt", sigma_posterior, fmt="%.6f")
+
 
 # %%
 
@@ -510,7 +532,7 @@ def curve_sampling(x0, sigma):
         samples = []
         while tau < T_MC:
             tau += dtau
-            border_terms = -left_border_vec*(x-B_init)/A_init + (left_border_vec-right_border_vec)/2
+            border_terms = (left_border_vec-right_border_vec)/2 # -left_border_vec*(x-B_init)/A_init 
             rhs = x + (dtau/dt) * (-dV_ds_data(np.exp(x)) + border_terms) + noise()
             x = thomas_algorithm_Langevin(rhs)           
             i += 1
