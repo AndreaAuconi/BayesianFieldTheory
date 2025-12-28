@@ -16,7 +16,7 @@ sigma = 0.02
 n = 251 # must be ODD number for correctly placing the central node
 integration_factor = 1.
 statistical_factor = 2.
-MC_samples = int(2e5)
+MC_samples = int(5e5)
 
 # CPUs usage
 fraction_cores = 1.
@@ -24,7 +24,7 @@ fraction_cores = 1.
 # utils
 exclude_path = False
 length_factor = 10.
-rescale = 300
+rescale = 200
 dtau_ML_factor = 2e3
 n_std_grid = 6.
 n_samples = 50
