@@ -1,71 +1,331 @@
 from joblib import Parallel, delayed
-import multiprocessing
+import multiprocessing as mp
 from tqdm import tqdm
 import pickle
+import nltk
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from numpy.random import choice
 from scipy.sparse import spdiags
 import itertools
+from functools import partial
 from scipy.sparse import csc_matrix, diags
 import seaborn as sns
 import ast
 from numba import njit
 import os
-#os.chdir("/home/andrea/Desktop/Epidemie/")
+#os.chdir("/home/andrea-auconi/Desktop/BFT/BlackDeath/")
 import datetime
 print(datetime.datetime.now())
 
-fraction_cores = 0.33
+fraction_cores = 1.
 
 # preprocessing parameters
-only_Patricians = False
-only_NonPatricians = False
-print('Only Patricians = ', only_Patricians)
-print('Only Non-Patricians = ', only_NonPatricians)
 load_names_dict = True
 cut = 1379.
 citations_max_gap = 15 # out if you are cited only once in more than _ years
 min_gap = 0.2 # min inter-citations time
 min_cits = 2 # fixed by model choice # DO NOT CHANGE
-#set_similarity_threshold = 0.4
-#strings_similarity_threshold = 0.25
+set_similarity_threshold = 0.4
+strings_similarity_threshold = 0.25
+n_check = 1500
+
+who_plays = 'All'
+if who_plays in ['Elites', 'Patricians', 'Citizens', 'Random900']:
+    print('Sample of ' + str(who_plays))
+else:
+    print('All')
+
 
 # lambda estimation parameters
-init_Year = 1334.5 # for the lambda estimation at border
-upper_citations = 200#Tutti # +2, (i,f) #(the most cited are not counted for the lambda estimation)
-lambda_Variance = 0.15 # uncertainty on lambda
+init_Year = 1334. # for the lambda estimation at border
+upper_citations = 50 # +2, (i,f) #(threshold on the most cited for the lambda estimation)
 n_samples = 100 # for the lambda exp distr factor
+lambda_Variance = 0.15 # uncertainty on lambda
+
 
 time_window = 7. #period pestem in deaths fraction estimation
 
 # numerical parameters
-n = 300
-T_MC = 400
+n = 350
+T_MC = 200
 T_MC_init = 0.05*T_MC
-dtau = 0.0025
+dtau = 100/n**2
 n_replicas = 200
 sampling = int(1e2)
-max_r = 0.23
+max_r = 0.3
 T_init = 5.
 
-# T_0 prior (uninformative)
-#B_init = -6.
-#A_init = 6.
 
-n_sigma = 140
+n_sigma = 150
 sigma_list = [0.01*(1.035**i) for i in range(n_sigma)]
 
+n_cores = int(mp.cpu_count()*fraction_cores)
 
-n_cores = int(multiprocessing.cpu_count()*fraction_cores)
+
+# %%
+
+pre_delibere = pickle.load(open("Data.pkl", "rb"))
+pre_delibere.sort(key=lambda elem: elem[0])
+
+delibere = []
+for i in pre_delibere:
+    if i[0] < cut:
+        delibere.append(i)
+
+locus = ['da', 'de', 'di', 'De']
+
+not_names = ['Et', 'Die', 'Capta', 'Sancti', 'Sancte', 'Sancto',
+             'Quod', 'Conte', 'Romanie', 'Ser', 'ser', 'In',
+             'Cum', 'Sanctum', 'Sanctus', 'Sancta', 'Ego',
+             'Mariae', 'Sanctam', 'Sanctorum', 'Creta', 'Rodi',
+             'Choche', 'Culfi', 'Culfum', 'Neapoli', 'Veneciis',
+             'Tana', 'Tervisane', 'Crete', 'Cipri', 'Christi',
+             'Trivisane', 'Domini', 'Formose', 'Venecias',
+             'Mothono', 'Mothonum', 'Tarvisio', 'Tarvisii', 'Mare',
+             'Nigropontis', 'Negroponte', 'Item', 'Nos',
+             'VIo', 'VIIo', 'VIIIo', 'Omnes', 'Costantinopolim',
+             'Maioris', 'Non', 'Le', 'Caput', 'Portu', 'La',
+             'Virginis', 'Servorum', 'Avedi', 'Terre', 'Terra',
+             'Yesu', 'Pagi', 'Trapesunda', 'Castri', 'Plebe',
+             'Sicilie', 'Iadre', 'Spalati', 'Cividadi', 'Cretam',
+             'Ciprum', 'Nigroponte', 'Capud', 'Verona', 'Pola',
+             'Iustinopoli', 'Cividale', 'Urbis', 'Urbe', 'Expediti',
+             'Cividado', 'Portum', 'Cruciferorum', 'Civitatis',
+             'Choroni', 'Mothoni', 'Culfo', 'Istrie', 'Venetias',
+             'Alexandria', 'Civitate', 'Cividali', 'Cividalis',
+             'Corfu', 'Coroni', 'Coneglani', 'Coneglano', 'Cipro',
+             'Constantinopoli', 'Trapessundam', 'Nigropontem',
+             'Venetiis', 'Veneciarum', 'Paduam', 'Ego', 'Padoa',
+             'Da', 'San', 'Concessionea', 'Civita', 'Venezia',
+             'Ungheria', 'Siria', 'Sapientes', 'Io', 'Mi', 'Sant',
+             'Kohl', 'Kohf', 'Decisione', 'Ancona', 'Risposta', 'Beirut',
+             'Santa', 'Monte', 'Facta', 'Madone', 'Candia', 'Istria',
+             'Corone', 'De', 'Del', 'Arcipelago', 'Castel', 'Ca', 'St',
+             'Romania', 'Tervisio', 'Mar', 'Deliberazioni', 'Il',
+             'Damasco', 'Senato', 'Prima', 'Primo', 'Culphy', 'Dfn',
+             'Liber', 'Magister', 'Portus', 'Alessandria', 'Actorum',
+             'École', 'Archivi', 'Cosliacco', 'Zadar', 'The',
+             'BCaTV', 'Mer', 'Trapesonde', 'Hoc', 'IIIIor', 'IIIIto',
+             'Kr', 'Krk', 'BCoTV', 'Ms', 'Ma', 'Con', 'IIIo', 'VIm',
+             'Si', 'Ad', 'En', 'Grazie', 'VIIIIa', 'Ivd', 'Turris',
+             'Koh', 'Indicione', 'Oltre', 'Ferrara', 'Verum', 'Posita',
+             'Cridata', 'Missa', 'Serie', 'Fact', 'Archivio', 'Magistrorum',
+             'Tripoli', 'Demographic', 'Evolution', 'Latin', 'Rule',
+             'Greek', 'Islands', 'Sea', 'Proceedings', 'First', 'International',
+             'Colloquium', 'Held', 'Royal', 'Holloway', 'London', 'September',
+             'Arris', 'Camberley', 'Storia', 'Monumenti',
+             'Raymond', 'Joseph', 'Peter', 'Schreiner', 'Venise', 'Istituto',
+             'Ellenico', 'Studi', 'Centro', 'Tedesco', 'Veneziani',
+             'Riviera', 'Koh', 'Indicione', 'Oltre', 'Ferrara', 'Verum', 'Posita',
+             'Cridata', 'Missa', 'Serie', 'Fact', 'Archivio', 'Ch',
+             'Pro', 'Constantinopolis', 'Qui', 'Castro', 'Alexandrie',
+             'Que', 'Nota', 'Dominus', 'Romaniam', 'Galee', 'Flandie',
+             'Capita', 'Capitis', 'Canem', 'Signorium', 'Aggeris', 'Avalone',
+             'Marchia', 'Anchonitana', 'Cretensis', 'Venerabilis', 'Vicecomiti',
+             'Anchonitana', 'Vicecomes', 'Vicecomitis',
+             'Lombardorum', 'Ducali', 'Resuretionis', 'Canis', 'Segnorii',
+             'Marchie', 'Anchonitane', 'Buccam', 'Parasii', 'Clarenciam', 'Franchi', 'Asili',
+             'Pederoiba', 'Visnado', 'Corectum', 'XV', 'Spalatum', 'Tragurium',
+             'Vicecomitibus', 'Venetiarum', 'Consiliarii', 'Dalmacie',
+             'Parte', 'Riparia', 'Brixiensi', 'Costantinopoli', 'Iesu', 'Christo',
+             'Postbizantini', 'Consiglio', 'Repubblica', 'Pontem', 'Opitergii',
+             'Longa', 'Arbe', 'Rab', 'Duca', 'Candia', 'Parenzo', 'Parencio',
+             'Porec', 'Pasca', 'Resuretionis', 'Duci', 'Chersi', 'Avalona',
+             'Spinariça', 'Duçi', 'Maiori', 'XL', 'Sclavorum', 'Iustinopolis',
+             'Mixtorum', 'Libri', 'Ripariam', 'Brixiensem', '']
+
+
+def is_name(word):
+    if len(word) <= 1:
+        return False
+    if not word[0].isupper():
+        return False
+    if not word[1:].islower(): 
+        return False
+    if word in not_names:
+        return False
+    return True
+
+def set_distance(str1, str2):
+    set1, set2 = set(str1), set(str2)
+    d = len(set1.difference(set2)) + len(set2.difference(set1))
+    l = len(set1) + len(set2)
+    return d/l
+
+def strings_distance(str1, str2):
+    d = nltk.edit_distance(str1, str2)
+    l = min(len(str1), len(str2))
+    return d/l
+
+def find_candidates(indices_chunk, names_list, n_check, set_thresh, str_thresh):
+    candidates = []
+    list_len = len(names_list)   
+    for i in indices_chunk:
+        str1 = names_list[i]
+        end_j = min(i + n_check + 1, list_len)      
+        for j in range(i + 1, end_j):
+            str2 = names_list[j]
+            if set_distance(str1, str2) < set_thresh:
+                if strings_distance(str1, str2) < str_thresh:
+                    candidates.append((str1, str2))                   
+    return candidates
+
+if load_names_dict:
+    with open('dict_names.pkl', 'rb') as file:
+        dict_names = pickle.load(file)
+
+else:
+        
+    names_list = []
+    
+    for i in range(len(delibere)):
+        words = delibere[i][2].split()
+        Id = 0
+        while Id < len(words)-2:
+            word = words[Id]
+            if is_name(word):
+                if word[0] == 'H':
+                    word = word[1].upper() + word[2:]
+                word2 = words[Id+1]
+                if is_name(word2):
+                    word += ' ' + word2
+                    Id += 1
+                    if word not in names_list:
+                        names_list.append(word)
+                elif word2 in locus:
+                    word += ' ' + word2 + ' ' + words[Id+2]
+                    Id += 2
+                    if word not in names_list:
+                        names_list.append(word)
+            Id += 1
+    
+    names_list.sort()
+     
+    print('Generating names dictionary ...')
+    
+    chunk_size = len(names_list) // n_cores + 1
+    chunks = [range(i, min(i + chunk_size, len(names_list))) 
+              for i in range(0, len(names_list), chunk_size)]
+
+    worker = partial(find_candidates, 
+                     names_list=names_list, 
+                     n_check=n_check, 
+                     set_thresh=set_similarity_threshold, 
+                     str_thresh=strings_similarity_threshold)
+
+    potential_matches = []
+    with mp.Pool(n_cores) as pool:
+        result_chunks = pool.map(worker, chunks)
+        for chunk in result_chunks:
+            potential_matches.extend(chunk)
+   
+    dict_names = {}
+    updated = set()
+    
+    for str1, str2 in potential_matches:
+        if (str1 not in updated) and (str2 not in updated):
+            dict_names[str2] = str1
+            updated.add(str2)
+             
+    with open("Dict_names.txt", 'w') as f:
+        for key, value in dict_names.items():
+            f.write('%s : %s\n' % (key, value))
+    
+    with open('dict_names.pkl', 'wb') as file:
+        pickle.dump(dict_names, file)
+        
+    print('Dictionary is complete.')
+
+
+# %%
+
+
+after = set(['memorie', 'tempore'])
+
+people = []
+t_m = []
+
+for i in range(len(delibere)):
+    t = delibere[i][0]
+    words = delibere[i][2].split()
+    Id = 2
+    while Id < len(words)-2:
+        word = words[Id]
+        if word in ['filius', 'filii', 'filiis'] or word.lower()[:5] == 'sanct'\
+                or len(set(words[Id-2:Id]) & after) > 0:
+            Id += 2
+        elif is_name(word):
+            if word[0] == 'H':
+                word = word[1].upper() + word[2:]
+            word2 = words[Id+1]
+            if is_name(word2):
+                word += ' ' + word2
+                Id += 1
+                if word in dict_names:
+                    word = dict_names[word]
+                if word in people:
+                    j = people.index(word)
+                    if (t - t_m[j][-1]) < citations_max_gap:
+                        if t > t_m[j][-1] + min_gap:
+                            t_m[j].append(t)
+                    else:
+                        people[j] += ' primo'
+                        people.append(word)
+                        t_m.append(list([t]))
+                else:
+                    people.append(word)
+                    t_m.append(list([t]))
+            elif (word2 in locus) and is_name(words[Id+2]):
+                word += ' ' + word2 + ' ' + words[Id+2]
+                Id += 2
+                if word in dict_names:
+                    word = dict_names[word]
+                if word in people:
+                    j = people.index(word)
+                    if (t - t_m[j][-1]) < citations_max_gap:
+                        if t > t_m[j][-1] + min_gap:
+                            t_m[j].append(t)
+                    else:
+                        people[j] += ' primo'
+                        people.append(word)
+                        t_m.append(list([t]))
+                else:
+                    people.append(word)
+                    t_m.append(list([t]))
+        Id += 1
+
+# %%
+
+hm = 1/24
+T_i = delibere[0][0]-hm
+T_f = delibere[-1][0]+hm
+dt = (T_f - T_i)/n
+t_grid = np.array([T_i + dt*(i+0.5) for i in range(n)])
+
+
+df_people = pd.DataFrame({'Name' : people, 't_m' : t_m})
+
+mask = df_people['Name'].apply(lambda x: strings_distance(x, 'Marsilii de Carraria') >= strings_similarity_threshold \
+                               and strings_distance(x, 'Marsilii de Cara') >= strings_similarity_threshold)
+df_people = df_people[mask]
+
+df_people['t_i'] = [i[0] for i in df_people['t_m']]
+df_people['t_f'] = [i[-1] for i in df_people['t_m']]
+df_people['nMentions'] = [len(i) for i in df_people['t_m']]
+df_people['TimeSpan'] = df_people['t_f']-df_people['t_i']
+filtered = df_people[(df_people['nMentions'] >= min_cits) \
+                     & (df_people['TimeSpan'] >= dt/2)].copy()
+
+filtered.to_excel('People.xlsx')
+
+print('xls list printed.')
 
 
 # %%
 
 column_names = [
-    'ID',
-    'Type',
     'Name',
     't_m',
     't_i',
@@ -81,17 +341,8 @@ data_types = {
     'TimeSpan': float,
 }
 
-filtered = pd.read_excel('People_3dicFinal2vc.xls',
-                       header=None, names=column_names, dtype=data_types,
-                       decimal=',')
-
-
-filtered = filtered[filtered['Type'] != 'x']
-
-if only_Patricians:
-   filtered = filtered[(filtered['Type'] == 'pn') | (filtered['Type'] == 'pv')]
-elif only_NonPatricians:
-    filtered = filtered[(filtered['Type'] == 'n') | (filtered['Type'] == 'p')]
+filtered = pd.read_excel('People.xlsx', names=column_names,
+                         dtype=data_types, decimal=',')
 
 
 filtered['t_m'] = filtered['t_m'].apply(ast.literal_eval)
@@ -160,6 +411,9 @@ for i in range(n):
     if i < int_init_Year or i > n-int_init_Year-1:
         lam_freq[i] = avg_lam_freq
 
+carpet = 0.001
+lam_freq += carpet*avg_lam_freq
+
 plt.clf()
 plt.plot(t_grid, lam_freq)
 plt.ylabel('$\lambda$', size = 14, rotation = 0)
@@ -172,8 +426,6 @@ left_border_vec = np.zeros_like(t_grid)
 left_border_vec[0] = 1
 right_border_vec = np.zeros_like(t_grid)
 right_border_vec[-1] = 1
-
-#Q = np.array([[np.prod(1-lam_freq[t1: t2+1]*dt) for t2 in range(n)] for t1 in range(n)])
 
 
 print('Sampling Q ...')
@@ -232,7 +484,7 @@ print(str(len(stories)) + " people")
 
 
 @njit
-def dV_ds_data (r):
+def dV_ds_data (r, stories):
     S = np.empty((n, n), dtype=np.float64)
     for t1 in range(n):
         for t2 in range(n):
@@ -273,8 +525,6 @@ print(datetime.datetime.now())
 print('Saddle point approximation...')
 
 # SADDLE POINT APPROX
-param_sigma_prior = 0.#uninformative
-
 
 @njit
 def V_data (r):
@@ -361,7 +611,7 @@ def Hessian_V_s_data (r):
         for k in range(n):
             H[j, k] *= r[j] * r[k]
             if k == j:
-                H[j, k] += dV_ds_data(r)[j]               
+                H[j, k] += dV_ds_data(r, stories)[j]               
     return H
 
 
@@ -374,7 +624,10 @@ def U_opt(r_opt, sigma_prime):
     return terms_prior + terms_measurement
 
 def log_det_H_opt(r_opt, sigma_prime):
-    m_diag = np.ones(n)*2/(np.power(sigma_prime, 2)*dt) # +left_border_vec/A_init
+    m_diag = np.ones(n) * 2.0 
+    m_diag[0] = 1.0
+    m_diag[-1] = 1.0
+    m_diag = m_diag/(np.power(sigma_prime, 2)*dt)
     up_down = -np.ones(shape = (len(m_diag)-1))/(np.power(sigma_prime, 2)*dt)
     H_prior = csc_matrix(diags([m_diag, up_down, up_down], [0, 1, -1])).toarray()
     H_data = Hessian_V_s_data(r_opt)
@@ -424,7 +677,7 @@ def saddle_point (sigma_prime):
         while tau < T_init:
             tau += dtau
             border_terms = (left_border_vec-right_border_vec)/2 # -left_border_vec*(x-B_init)/A_init 
-            rhs = x + (dtau/dt) * (-dV_ds_data(np.exp(x)) + border_terms)
+            rhs = x + (dtau/dt) * (-dV_ds_data(np.exp(x), stories) + border_terms)
             x = thomas_algorithm_Langevin(rhs) 
         return x
     
@@ -439,7 +692,7 @@ pre_samples = Parallel(n_jobs=n_cores)(delayed(saddle_point)(sigma_list[i]) for 
 optima = np.array([i[0] for i in pre_samples])
 integral_list = np.array([i[1] for i in pre_samples])
 
-integral_list -= np.array(sigma_list)*param_sigma_prior
+
 integral_list -= np.min(integral_list)
 
 sigma_posterior = np.exp(integral_list)
@@ -484,8 +737,11 @@ t_B = get_index (t_BD + time_window/2)
 
 print('t_BD = ' + str(t_BD))
 
+print(datetime.datetime.now())
+
 
 # %%
+
 
 def curve_sampling(x0, sigma):
     
@@ -533,7 +789,7 @@ def curve_sampling(x0, sigma):
         while tau < T_MC:
             tau += dtau
             border_terms = (left_border_vec-right_border_vec)/2 # -left_border_vec*(x-B_init)/A_init 
-            rhs = x + (dtau/dt) * (-dV_ds_data(np.exp(x)) + border_terms) + noise()
+            rhs = x + (dtau/dt) * (-dV_ds_data(np.exp(x), stories) + border_terms) + noise()
             x = thomas_algorithm_Langevin(rhs)           
             i += 1
             if i == sampling:
@@ -731,7 +987,6 @@ pre_delibere.sort(key=lambda elem: elem[0])
 
 delibere = []
 for i in pre_delibere:
-    if i[0] < cut:
         delibere.append(i)
         
 list_mortalitatis_mentions = []
@@ -756,7 +1011,7 @@ plt.figure(figsize=(8, 3))
 hist_counts, bin_edges = np.histogram(list_mortalitatis_mentions, bins=50)
 plt.clf()
 plt.plot(t_grid, mean_r_t, label='Mean mortality rate')
-plt.plot(t_grid, mean_r_t+std_r_t, color = 'gray', linestyle = 'dashed', label='$\pm 1$ Std')
+plt.plot(t_grid, mean_r_t+std_r_t, color = 'gray', linestyle = 'dashed', label='$\pm 1$ StdDev')
 plt.plot(t_grid, mean_r_t-std_r_t, color = 'gray', linestyle = 'dashed')
 #plt.plot(t_grid, np.exp(s_ML), label=r'$\exp (s_{ML})$')
 bin_widths = np.diff(bin_edges)
@@ -775,17 +1030,17 @@ plt.savefig('Mean_curve_1.pdf')
 
 plt.clf()
 plt.figure(figsize=(8, 3))
-hist_counts, bin_edges = np.histogram(list_mortalitatis_mentions, bins=50)
-plt.clf()
+#hist_counts, bin_edges = np.histogram(list_mortalitatis_mentions, bins=50)
+#plt.clf()
 plt.plot(t_grid, mean_r_t, color = "purple", label='Mean mortality rate')
-plt.plot(t_grid, mean_r_t+std_r_t, color = 'gray', linestyle = 'dashed', label='$\pm 1$ Std')
+plt.plot(t_grid, mean_r_t+std_r_t, color = 'gray', linestyle = 'dashed', label='$\pm 1$ StdDev')
 plt.plot(t_grid, mean_r_t-std_r_t, color = 'gray', linestyle = 'dashed')
 #plt.plot(t_grid, np.exp(s_ML), label=r'$\exp (s_{ML})$')
 plt.imshow(np.flip(np.transpose(M), axis=0), extent=[t_grid[0], t_grid[-1], 0, max_r], alpha = 0.75, cmap = "gray_r", aspect="auto")
-bin_widths = np.diff(bin_edges)
-bin_centers = bin_edges[:-1] + bin_widths/2
-height_scaling_factor = 0.01  # Adjust this as needed
-plt.bar(bin_centers, height_scaling_factor*hist_counts, color = 'red',       width=0.8*bin_widths, alpha=0.7, label='Mentions of "pestem"')
+#bin_widths = np.diff(bin_edges)
+#bin_centers = bin_edges[:-1] + bin_widths/2
+#height_scaling_factor = 0.01  # Adjust this as needed
+#plt.bar(bin_centers, height_scaling_factor*hist_counts, color = 'red', width=0.8*bin_widths, alpha=0.7, label='Mentions of "pestem"')
 plt.legend()
 plt.ylabel('$r$', size=14, rotation=0)
 plt.xlabel('Year', size=13)
