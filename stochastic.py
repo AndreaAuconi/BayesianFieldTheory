@@ -13,21 +13,22 @@ print(datetime.datetime.now())
 sigma = 0.02
 
 # numerical estimation parameters
-n = 251 # must be ODD number for correctly placing the central node
-integration_factor = 1.
-statistical_factor = 2.
-MC_samples = int(5e5)
+n = 351 # must be ODD number for correctly placing the central node
+integration_factor = 2.
 
 # CPUs usage
 fraction_cores = 1.
 
 # utils
 exclude_path = False
+statistical_factor = 5.
 length_factor = 10.
+MC_samples = int(5e5*integration_factor)
+J_cal_factor = 20
 rescale = 200
 dtau_ML_factor = 2e3
 n_std_grid = 6.
-n_samples = 50
+n_samples = 80
 half_n_samples = n_samples/2
 n_ML = n*rescale
 T_ML = 10. #note alpha \sim r_0 = 1., SPDE timescale roughly 1. independent of sigma
@@ -58,8 +59,8 @@ x_grid = np.array([(i+0.5-n_samples/2)*dx_grid for i in range(n_samples)])
 factor_long = 100
 dx_grid_long = dx_grid/factor_long
 x_grid_long = np.array([(i+0.5-factor_long*n_samples/2)*dx_grid_long for i in range(factor_long*n_samples)])
-split_sim = 10
-T_MC= statistical_factor*1e7*(1/(split_sim*n_cores))
+split_sim = 30
+T_MC = statistical_factor*1e7/(split_sim*n_cores)
 calibration_ratio = 0.2
 
 
@@ -123,24 +124,20 @@ def thomas_algorithm_ML(d):
     return x
 
 @njit
-def thomas_algorithm_Langevin(d):
-    c_prime = np.zeros(n)
-    d_prime = np.zeros(n)
+def thomas_algorithm_Langevin(d, c_prime, d_prime, x_out):
     c_prime[0] = c_Langevin[0] / b_Langevin[0]
-    d_prime[0] = d[0] / b_Langevin[0]
+    d_prime[0] = d[0] / b_Langevin[0]    
     for i in range(1, n):
         a_coeff = a_Langevin[i - 1] 
-        m = 1.0 / (b_Langevin[i] - a_coeff * c_prime[i - 1])
+        m = 1. / (b_Langevin[i] - a_coeff * c_prime[i - 1])
         if i < n - 1:
             c_prime[i] = c_Langevin[i] * m
         else:
-            c_prime[i] = 0.0            
+            c_prime[i] = 0.            
         d_prime[i] = (d[i] - a_coeff * d_prime[i - 1]) * m
-    x = np.zeros(n)
-    x[n - 1] = d_prime[n - 1]  
+    x_out[n - 1] = d_prime[n - 1]  
     for i in range(n - 2, -1, -1):
-        x[i] = d_prime[i] - c_prime[i] * x[i + 1]      
-    return x
+        x_out[i] = d_prime[i] - c_prime[i] * x_out[i + 1]   
 
 @njit
 def find_optimum(time_series):
@@ -218,7 +215,7 @@ def compute_integral_J_montecarlo(t):
     Exp_factor = beta*np.abs(t)
     Cos_factor = beta*t
     theta_max = np.pi / 2.0
-    theta = np.random.uniform(0.0, theta_max, n*MC_samples)
+    theta = np.random.uniform(0.0, theta_max, J_cal_factor*MC_samples)
     k = np.tan(theta)
     Sqrt_term = np.sqrt(2.0 + k**2)
     Inv_Sqrt_term = 1.0 / Sqrt_term
@@ -226,7 +223,7 @@ def compute_integral_J_montecarlo(t):
     Cos_arg = Cos_factor * k
     prefactor = 4.0 / np.pi    
     g_theta = prefactor * Inv_Sqrt_term * np.cos(Cos_arg) * np.exp(Exp_arg)
-    integral_estimate = - nu**2 * (theta_max / (n*MC_samples)) * np.sum(g_theta)
+    integral_estimate = - nu**2 * (theta_max / (J_cal_factor*MC_samples)) * np.sum(g_theta)
     return integral_estimate
 
 @njit
@@ -456,28 +453,32 @@ def OU_init():
         vec.append(s)
     return np.array(vec)
 
+
 @njit
 def noise_calibration():
-    def space_time_noise():
-        return np.random.normal(0, noise_factor, n)
     discrete_Var = 0.
     discrete_Mean = 0.
-    n_samples = 0 
+    calib_samples = 0 
     x = OU_init()
+    c_buf = np.zeros(n)
+    d_buf = np.zeros(n)
+    rhs = np.zeros(n)    
     tau = np.float64(0.)
     i = 0
-    while tau < T_MC*calibration_ratio:
+    decay_factor = 1.0 - dtau * alpha
+    while tau < T_MC * calibration_ratio:
         tau += dtau
-        rhs = x - dtau * alpha * x + space_time_noise()
-        x = thomas_algorithm_Langevin(rhs)      
+        for k in range(n):
+            rhs[k] = x[k] * decay_factor + np.random.normal(0, noise_factor)
+        thomas_algorithm_Langevin(rhs, c_buf, d_buf, x)
         i += 1
         if i == sampling:
             i = 0
             discrete_Mean += x[mid_n]
             discrete_Var += x[mid_n]**2
-            n_samples += 1
-    discrete_Mean /= n_samples
-    discrete_Var /= n_samples
+            calib_samples += 1        
+    discrete_Mean /= calib_samples
+    discrete_Var /= calib_samples
     discrete_Var -= discrete_Mean**2
     return discrete_Var / nu
 
@@ -495,27 +496,29 @@ print(datetime.datetime.now())
 
 @njit
 def Langevin_statistics():
-    def space_time_noise():
-        return np.random.normal(0, adjusted_noise_factor, n)
     vec = np.zeros(n_samples)
     x = OU_init()
+    c_buf = np.zeros(n)
+    d_buf = np.zeros(n)
+    rhs = np.zeros(n)
     tau = np.float64(0.)
     i = 0
     while tau < T_MC:
         tau += dtau
-        rhs = x - dtau * r_star * (np.exp(x) - 1) + space_time_noise()
-        x = thomas_algorithm_Langevin(rhs)      
+        for k in range(n):
+            drift = x[k] - dtau * r_star[k] * (np.exp(x[k]) - 1.0)
+            rhs[k] = drift + np.random.normal(0, adjusted_noise_factor)
+        thomas_algorithm_Langevin(rhs, c_buf, d_buf, x)             
         i += 1
         if i == sampling:
             i = 0
             if tau > tau_init:
-                x_cont = x[mid_n]/dx_grid +half_n_samples
+                x_cont = x[mid_n]/dx_grid + half_n_samples
                 if x_cont > 0.:
                     j = int(x_cont)
                     if j < n_samples:
                         vec[j] += 1
     return vec
-
 
 
 print('statistics...')
@@ -561,7 +564,7 @@ print(num_k_3)
 
 
 plt.clf()
-plt.scatter(x_grid, numerical/dx_grid, color='black', s=20)
+plt.scatter(x_grid, numerical/dx_grid, color='black', s=15)
 plt.plot(x_grid_long, Theory/dx_grid_long, color='gray', linewidth = 2)
 plt.plot(x_grid_long, NP_Theory/dx_grid_long, color='gray', linestyle='--', linewidth = 2)
 plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
@@ -580,7 +583,7 @@ small_NP_Theory = np.array(small_NP_Theory)
 
 
 plt.clf()
-plt.scatter(x_grid, (numerical-small_NP_Theory)/dx_grid, color='black', s=20)
+plt.scatter(x_grid, (numerical-small_NP_Theory)/dx_grid, color='black', s=15)
 plt.plot(x_grid_long, (Theory-NP_Theory)/dx_grid_long, color='gray', linewidth = 2)
 plt.xlim(0.8*x_grid[0], 0.8*x_grid[-1])
 plt.xlabel('$x$', size=14)
