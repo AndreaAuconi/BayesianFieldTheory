@@ -14,10 +14,10 @@ sigma = 0.02
 
 # numerical estimation parameters
 n = 351 # must be ODD number for correctly placing the central node
-integration_factor = 2.
+integration_factor = 0.1
 
 # CPUs usage
-fraction_cores = 1.
+fraction_cores = 0.5
 
 # utils
 exclude_path = False
@@ -253,12 +253,13 @@ def compute_integral_K2_montecarlo(t, t_prime):
     sec_theta = 1.0 / (cos_theta + 1e-20)
     A_theta = np.sqrt((sec_theta - 1.0) / 2.0)
     B_theta = np.sqrt((sec_theta + 1.0) / 2.0)
-    Exp_arg = -beta * R1  * B_theta
+    Exp_arg = -beta * R1 * B_theta
     Cos1_arg = beta * R2 * A_theta
     Cos2_arg = beta * R3 * A_theta
     A_over_tan = (1.0 / (2.0 * np.cos(theta / 2.0))) * np.sqrt(cos_theta)
-    g_pre = (1.0 / np.pi) * A_over_tan
-    g_theta = g_pre * np.exp(Exp_arg) * np.cos(Cos1_arg) * np.cos(Cos2_arg)
+    B_over_tan = np.sqrt(cos_theta) / (2.0 * np.sin(theta / 2.0) + 1e-20)
+    bracket = A_over_tan * np.cos(Cos2_arg) + B_over_tan * np.sin(Cos2_arg)
+    g_theta = (1.0 / np.pi) * bracket * np.exp(Exp_arg) * np.cos(Cos1_arg)
     integral_estimate_0_to_inf = (theta_max / MC_samples) * np.sum(g_theta)
     integral_estimate_neg_inf_to_inf = 2.0 * integral_estimate_0_to_inf
     integral_estimate = nu**3 * integral_estimate_neg_inf_to_inf
